@@ -165,7 +165,8 @@ void PrintHelp()
 	" 1 [enter] show state of database \n"
 	" 2 [enter] show readonly transaction log \n" 
 	" 3 [enter] update the database \n"
-	" 4 [enter] roll database back to state n \n");
+	" 4 [enter] roll database back to state n \n";
+	" 5 [enter] take snapshot \n");
 
 }
 
