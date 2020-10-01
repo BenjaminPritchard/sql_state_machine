@@ -3,9 +3,9 @@ example of making a database into a sort of state machine, in a TCP/IP client/se
 
 This code is just throw-away to start to expiriment with ideas.
 
-sql_state_engine.c - main engine supporting reading / writing from the database, maintaining a log, taking snapshots, and rebuilding the data store from snap shots
-sql_state_server.c - TCP/IP interface wrapper around the engine
-client_test.py - simple example client to issue commands to the database 
+* sql_state_engine.c - main engine supporting reading / writing from the database, maintaining a log, taking snapshots, and rebuilding the data store from snap shots
+* sql_state_server.c - TCP/IP interface wrapper around the engine
+* client_test.py - simple example client to issue commands to the database 
 
 the data itself consists of only one table, with one column
 
