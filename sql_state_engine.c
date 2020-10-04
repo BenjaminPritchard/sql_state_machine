@@ -3,18 +3,10 @@
 // SQL_State_Engine.c
 //
 // simple test app for treating a SQLite database as a state machine that can be 
-// recreated (i.e rolled back) using snapshots &/or a read-only transaction log
+// recreated (i.e rolled back) using an append-only transaction log
 //
 // Benajmin Pritchard
 // 1-October-2020
-//
-// In the interest of simplicity, this code is setup to be compiled in an executable.
-// 
-// You can use it two ways:
-//		1) from the command line, to interact with the database
-//		2) via TCP
-// 
-// (for details over how to interact with this via TCP, see sql_state_server.c)
 //
 // documentation on using SQLite from C:
 // https://sqlite.org/cintro.html	
@@ -35,24 +27,27 @@
 #define TRUE 1
 #define FALSE 0 
 
-const char *VersionString 	= "1.0";	
-const char *TransactionFile = "transaction.log";	
+const char *VersionString 	= "1.1";	
+const char *TransactionFile = "transaction.log";
+const char *DatabaseName	= "data.sqlite";	
 
 // globals
 sqlite3 *db;
 char 	*zErrMsg = 0;
 int 	rc;
-char 	*sql;
-int 	directorID = -1;
-int 	finished = FALSE;
+bool	finished = FALSE;
 
 // callback from SQLite
-// displays the contents of our database
+// called once per row
 static int callback(void *data, int argc, char **argv, char **azColName){
-	int i;
+	
+	// just print out the SQL statement that resulted
 	fprintf(stderr, "%s\n", (const char*)data);
 
-	for(i = 0; i<argc; i++){
+	// in this example program, we only get one column back
+	// but theoretically we could get back multiple columns, so just print
+	// them all out
+	for(int i = 0; i<argc; i++){
 		printf("%s = %s\n", azColName[i], argv[i] ? argv[i] : "NULL");
 	}
 
@@ -60,13 +55,36 @@ static int callback(void *data, int argc, char **argv, char **azColName){
 	return 0;
 }
 
+// returns total number of entries in the transaction log
+int lines_in_transaction_log()
+{
+	FILE* file; 
+	char line[256];
+	int counter = 0;
+
+	file = fopen(TransactionFile, "r");
+
+	if (!file) {
+		fprintf(stderr, "cannot open file: %s\n", TransactionFile);
+		return 0;
+	}
+
+	while (fgets(line, sizeof(line), file)) {
+		counter++;
+	}
+	
+	fclose(file);
+	
+	return counter;
+}
+
+
 // makes one atomic write to our transaction log
-int writeToTransactionLog(char *string_to_write)
+bool writeToTransactionLog(char *string_to_write)
 {
 	
 	FILE* file; 
 	char line[256];
-	int counter = 0;
 
 	file = fopen(TransactionFile, "a");
 
@@ -75,12 +93,13 @@ int writeToTransactionLog(char *string_to_write)
 		return 0;
 	}
 	
-	fprintf (file, string_to_write);
+	sprintf(line, "%i,%s", lines_in_transaction_log()+1, string_to_write);
+	
+	fprintf (file, line);
 	fclose(file);
 	
 	return TRUE;
 }
-
 
 // returns TRUE if we could update...
 bool update_database() 
@@ -96,32 +115,42 @@ bool update_database()
 	if( rc != SQLITE_OK ){
 		fprintf(stderr, "SQL error: %s\n", zErrMsg);
 		sqlite3_free(zErrMsg);
-		directorID = -1;
 	} else {
-		directorID = sqlite3_last_insert_rowid(db);		
 		printf("database updated successfully\n");
 	}
 
 	return (rc == SQLITE_OK);
-
 }
 
-// read each line from the transaction log, and executes it against the database...
-void dumpTransactionLog(const char* input_file)
+// returns TRUE if we could update...
+bool execute_SQL(const char *sql) 
+{
+	rc = sqlite3_exec(db, sql, 0, 0, &zErrMsg);
+
+	if( rc != SQLITE_OK ){
+		fprintf(stderr, "SQL error: %s\n", zErrMsg);
+		sqlite3_free(zErrMsg);
+	} else {
+		printf("database updated successfully\n");
+	}
+
+	return (rc == SQLITE_OK);
+}
+
+// just print out the transaction log
+void dumpTransactionLog()
 {
 	FILE* file; 
 	char line[256];
 	int counter = 0;
 
-	file = fopen(input_file, "r");
+	file = fopen(TransactionFile, "r");
 
 	if (!file) {
-		fprintf(stderr, "cannot open file: %s\n", input_file);
+		fprintf(stderr, "cannot open file: %s\n", TransactionFile);
 		return;
 	}
 
-	printf("parsing transaction log: %s\n", input_file);
-	
 	while (fgets(line, sizeof(line), file)) {
 		printf(line);
 	}
@@ -129,11 +158,14 @@ void dumpTransactionLog(const char* input_file)
 	fclose(file);
 }
 
-// read each line from the transaction log, and executes it against the database...
-void buildDatabaseFromTransactionLog(const char* input_file)
+
+// read each line from the transaction log (up to state_number), 
+// and executes it against the database.
+void buildDatabaseFromTransactionLog(const char* input_file, const int state_number)
 {
 	FILE* file; 
 	char line[256];
+	char *line_ptr;
 	int counter = 0;
 
 	file = fopen(input_file, "r");
@@ -152,7 +184,18 @@ void buildDatabaseFromTransactionLog(const char* input_file)
 			line[strlen(line) - 1] = 0;
 		}
 		
-		update_database(line);
+		// strip off the initial line number
+		line_ptr = line;
+		while (*line_ptr != ',')
+			line_ptr++;
+		
+		// now skip the comma...
+		line_ptr++;
+		
+		if (counter++ < state_number)
+			execute_SQL(line_ptr);
+		else 
+			break;	// we are done; only go up to state "n" [i.e. line #n]
 	}
 	
 	fclose(file);
@@ -163,44 +206,61 @@ void PrintHelp()
 	printf("commands:\n"
 	" 0 [enter] exit \n"
 	" 1 [enter] show state of database \n"
-	" 2 [enter] show readonly transaction log \n" 
+	" 2 [enter] print readonly transaction log \n" 
 	" 3 [enter] update the database \n"
-	" 4 [enter] roll database back to state n \n";
-	" 5 [enter] take snapshot \n");
-
+	" 4 [enter] roll database back to state n \n");
+	
+	fflush(stdout);
 }
 
-// right now, we ignore snapshots [which aren't implemented yet]
-// and just rebuild soley from the begining of the transaction
-// log
+void ApplyInitialSchema()
+{
+	execute_SQL("CREATE TABLE IF NOT EXISTS data (value int);");
+	execute_SQL("INSERT into data (value) values (0);");
+}
+
 void rollDatabaseBack(const int prev_state_number)
 {
-	// TODO: figure out which snapshot to start from
-	// figure out where in the transaction log the snapshot is
-	// and only start from that point...
 	
-	// for now, just execute each line in the transaction log,
-	// which will rebuild the database's state...
+	// close our existing connection to the database
+	sqlite3_close(db);
 	
-	buildDatabaseFromTransactionLog(TransactionFile);
-}
+	// delete the database all together
+	if(remove(DatabaseName) != 0) {
+	  printf("Error: unable to delete database file");
+	  exit(0);
+	}
+	
+	// create a new database...
+	printf("Rebuilding database...\n");
+	
+	rc = sqlite3_open(DatabaseName, &db);
 
-void updateDatabase()
-{
-	update_database();
+	if( rc ) {
+		fprintf(stderr, "Can't create database file %s. Error: %s\n", DatabaseName, sqlite3_errmsg(db));
+		exit(0);
+	} 
+	
+	// database is blank right now, so create our table
+	ApplyInitialSchema();
+	
+	// and rebuild it from the log file, back to state "N"
+	buildDatabaseFromTransactionLog(TransactionFile, prev_state_number);
+
+	printf("database successfully rebuilt\n");
+	
 }
 
 void showDatabase()
 {
-
 	int rowcount;
 	sqlite3_stmt *stmt;
 	
-	char *sql = "SELECT * FROM data";
+	const char *sql = "SELECT * FROM data";
 	
 	// will call callback function once for each row that is returned...
 
-	rc = sqlite3_exec(db, sql, callback, 0, &zErrMsg);
+	rc = sqlite3_exec(db, sql, callback, (void*)sql, &zErrMsg);
 	if (rc != SQLITE_OK) {
 		fprintf(stderr, "SQL error: %s\n", zErrMsg);
 		sqlite3_free(zErrMsg);
@@ -209,7 +269,6 @@ void showDatabase()
 	// we need another version that will step through the results
 	
 }
-
 
 void HandleKeyboard()
 {
@@ -220,7 +279,7 @@ void HandleKeyboard()
 	len = strlen(line);
 	if (len > 0) line[len - 1] = 0;
 	
-	if (strcmp(line, "?") == 0) {
+	if (len == 0 && strcmp(line, "?") == 0) {
 		PrintHelp();
 	}
 
@@ -238,7 +297,6 @@ void HandleKeyboard()
 	
 	if (strcmp(line, "3") == 0) {
 		update_database();
-		// TODO: check return value...
 	}
 
 	if (strcmp(line, "4") == 0) {
@@ -250,16 +308,33 @@ void HandleKeyboard()
 	}
 }
 
+bool FileExists(const char * filename){
+    FILE *file;
+    if (file = fopen(filename, "r")){
+        fclose(file);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 void InitEngine()
 {
+	bool should_initialize = !FileExists(DatabaseName);
+	
 	printf("sql_state_engine, version %s\n", VersionString);
 	
-	rc = sqlite3_open("data.sqlite", &db);
+	rc = sqlite3_open(DatabaseName, &db);
 
 	if( rc ) {
 		fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
 		exit(0);
 	} 
+	
+	if (should_initialize) 
+	{
+		printf("Creating database for initial use...\n");
+		ApplyInitialSchema();
+	}
 	
 }
 
