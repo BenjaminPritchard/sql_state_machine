@@ -5,11 +5,11 @@ the data itself consists of only one table, with one column [for illustration pu
 
 The idea of the transaction log is to have a series of SQL statements in there like this:
 
-	0: UPDATE xxx
-	1: UPDATE yyy
-	2: UPDATE zzz
+	1: UPDATE xxx
+	2: UPDATE yyy
+	3: UPDATE zzz
 	[...]
-	501: UPDATE xxx
+	500: UPDATE xxx
 
 Then we have a routine rollDatabaseBack() that can recreate the database to state "N"
 
